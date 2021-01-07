@@ -1,0 +1,956 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+Parameters: 
+  InitialCodeBucketName: 
+    Type: "String"
+    Default: "your-bucket-name-here"
+    Description: S3 Bucket containing build artifacts; should come from the CodeBuild step in Codepipeline
+  InitialCodeObjectKey: 
+    Type: String
+    Default: "codecommit-repo.zip"
+    Description: Specific reference to the build file within the bucket; should come from the CodeBuild step in Codepipeline
+  Subnets: 
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: Select target subnets for autoscaling group at the end of the pipeline. These will be exported across CloudFormation stacks to avoid manual intervention at later stages in the pipeline.
+  Architecture: 
+    Type: String
+    Default: x86
+    AllowedValues: 
+      - x86
+      - arm64
+    Description: Select between Intel/AMD (x86) and ARM architecture
+  InstanceType: 
+    Type: String
+    Default: t3.nano
+    AllowedValues: 
+      - t2.micro
+      - t3.nano
+      - t3a.nano
+      - t4g.nano
+      - t4g.micro
+      - m5.large
+      - m5a.large
+      - m6g.medium
+      - m6g.large
+    Description: For x86, select t3/m5(a). For ARM, select t4g/m6g instances
+Resources:
+  # The CI/CD pipeline stitching the full mechanism together
+  DemoPipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      Name: !Sub "${AWS::StackName}-Pipeline"
+      RoleArn: !GetAtt DemoPipelineRole.Arn
+      Stages:
+        - Actions:
+            # Initiate Pipeline from CodeCommit
+            - ActionTypeId: 
+                Version: '1'
+                Provider: CodeCommit
+                Category: Source
+                Owner: AWS
+              OutputArtifacts:
+                - Name: source
+              InputArtifacts: []
+              Name: source
+              Configuration:
+                RepositoryName: !Sub "${AWS::StackName}-Repository"
+                BranchName: master
+                PollForSourceChanges: 'false'
+              RunOrder: 1
+              Namespace: SourceVars
+          Name: Initiate
+        - Actions:
+            # Build Java code with CodeBuild
+            - ActionTypeId: 
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: "1"
+              Configuration:
+                ProjectName: !Ref DemoCodeBuild
+              InputArtifacts:
+                - Name: source
+              Name: build
+              OutputArtifacts:
+                - Name: jar
+              RunOrder: 1
+              Namespace: BuildVars   
+          Name: BuildCode       
+        - Actions:
+            # Prepare input parameters using AWS Lambda
+            - ActionTypeId: 
+                Category: Invoke
+                Owner: AWS
+                Provider: Lambda
+                Version: "1"
+              Configuration:
+                FunctionName:
+                  Ref: BuildImgParamLambda
+                UserParameters: !Sub "/${AWS::StackName}/ImageVersion"
+              InputArtifacts:
+                - Name: jar
+              Name: convert_build_img_params
+              RoleArn: !GetAtt BuildImgParamActionRole.Arn
+              RunOrder: 1
+              Namespace: BuildImgParamVars
+            # Create Change Set for AWS CloudFormation which in turn uses EC2 Image Builder to create a new AMI
+            - ActionTypeId: 
+                Category: Deploy
+                Owner: AWS
+                Provider: CloudFormation
+                Version: "1"
+              Configuration:
+                StackName: !Sub "${AWS::StackName}-BuildImg"
+                RoleArn: !GetAtt BuildImgCFRole.Arn
+                ParameterOverrides: !Sub
+                  - "{${Map}}"
+                  - "Map": !Join
+                    - ","
+                    - - '"BucketName": "#{BuildImgParamVars.BucketName}"'
+                      - '"ObjectKey": "#{BuildImgParamVars.ObjectKey}"'
+                      - '"Version": "#{BuildImgParamVars.Version}"'
+                      - !Sub '"InstanceProfile": "${BuildImgEC2InstanceProfile}"'
+                      - !Sub '"Architecture": "${Architecture}"'
+                      - !Sub '"InstanceType": "${InstanceType}"'
+                ActionMode: CHANGE_SET_REPLACE
+                ChangeSetName: buildimage
+                TemplatePath: source::cf-build-image.yaml
+              InputArtifacts:
+                - Name: source
+              Name: create_change_set
+              RoleArn: !GetAtt BuildImgCreateActionRole.Arn
+              RunOrder: 2
+              Namespace: BuildImgCFParamCreateVars              
+            # Apply Change Set for AWS CloudFormation which in turn uses EC2 Image Builder to create a new AMI
+            - ActionTypeId: 
+                Category: Deploy
+                Owner: AWS
+                Provider: CloudFormation
+                Version: "1"
+              Configuration:
+                StackName: !Sub "${AWS::StackName}-BuildImg"
+                ActionMode: CHANGE_SET_EXECUTE
+                ChangeSetName: buildimage
+              Name: apply_change_set
+              RoleArn: !GetAtt BuildImgApplyActionRole.Arn
+              RunOrder: 3
+              Namespace: BuildImgCFParamApplyVars
+          Name: BuildImage
+        - Actions:
+            # Create Change Set for AWS CloudFormation which in turn Deploys the new AMI through an AutoScalingGroup
+            - ActionTypeId: 
+                Category: Deploy
+                Owner: AWS
+                Provider: CloudFormation
+                Version: "1"
+              Configuration:
+                StackName: !Sub "${AWS::StackName}-DeployImg"
+                RoleArn: !GetAtt DeployImgCFRole.Arn
+                ParameterOverrides: !Sub
+                  - "{${Map}}"
+                  - "Map": !Join
+                    - ","
+                    - - '"AmiId": "#{BuildImgCFParamApplyVars.DemoImageId}"'
+                      - '"Version": "#{BuildImgParamVars.Version}"'
+                      - '"SourceAuthorDate": "#{SourceVars.AuthorDate}"'
+                      - '"SourceBranchName": "#{SourceVars.BranchName}"'
+                      - '"SourceCommitId": "#{SourceVars.CommitId}"'
+                      - '"SourceCommitMessage": "#{SourceVars.CommitMessage}"'
+                      - '"SourceCommitterDate": "#{SourceVars.CommitterDate}"'
+                      - '"SourceRepositoryName": "#{SourceVars.RepositoryName}"'
+                      - !Sub 
+                        - '"Subnets": "${JoinSubnets}"'
+                        - 'JoinSubnets': !Join [",", !Ref Subnets]
+                      - !Sub '"InstanceType": "${InstanceType}"'
+                ActionMode: CHANGE_SET_REPLACE
+                ChangeSetName: deployimage
+                TemplatePath: source::cf-deploy-image.yaml
+              InputArtifacts:
+                - Name: source
+              Name: create_change_set
+              RoleArn: !GetAtt DeployImgCreateActionRole.Arn
+              RunOrder: 1
+              Namespace: DeployImgCFParamCreateVars              
+            # Apply Change Set for AWS CloudFormation which in turn Deploys the new AMI through an AutoScalingGroup
+            - ActionTypeId: 
+                Category: Deploy
+                Owner: AWS
+                Provider: CloudFormation
+                Version: "1"
+              Configuration:
+                StackName: !Sub "${AWS::StackName}-DeployImg"
+                ActionMode: CHANGE_SET_EXECUTE
+                ChangeSetName: deployimage
+              Name: apply_change_set
+              RoleArn: !GetAtt DeployImgApplyActionRole.Arn
+              RunOrder: 2
+              Namespace: DeployImgCFParamApplyVars
+          Name: DeployImage
+      ArtifactStore:
+        Location: !Ref DemoArtifactBucket
+        Type: S3
+    DependsOn:
+      - DemoPipelinePolicy
+  # Git repository containing Hello World level Java code for demo purposes
+  DemoRepository:
+    Type: AWS::CodeCommit::Repository
+    Properties: 
+      Code: 
+        S3:
+          Bucket: !Ref InitialCodeBucketName
+          Key: !Ref InitialCodeObjectKey
+      RepositoryDescription: !Sub "Hello World Spring Boot application to demo in ${AWS::StackName} pipeline"
+      RepositoryName: !Sub "${AWS::StackName}-Repository"
+  # AWS CodeBuild to facilitate Maven Build process of the Java project.
+  DemoCodeBuild:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Artifacts:
+        Type: CODEPIPELINE
+      Environment:
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/java:openjdk-11
+        PrivilegedMode: false
+        Type: LINUX_CONTAINER
+      Name: !Sub "${AWS::StackName}-Build"
+      ServiceRole: !GetAtt CodeBuildRole.Arn
+      Source:
+        Type: CODEPIPELINE
+  # Lambda function that takes the reference to the output from the
+  # CodeBuild project (an S3 reference) and passes it on as AWS
+  # CodePipeline Paratemeters to be injected into the next Cloud-
+  # Formation stage. It also calculates the latest version number
+  # and passes it as a parameter.
+  BuildImgParamLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      Code:
+        # Contents of Lambda inline as it is sufficiently small
+        # this saves the complexity of additional S3 buckets needed
+        ZipFile: |
+          import boto3
+
+          codepipeline = boto3.client('codepipeline')
+          ssm = boto3.client('ssm')
+
+          # Constants for Parameter Version
+          default_version = '1.0.0'
+
+          # This Lambda takes the reference to the input artifact (typically from 
+          # CodeBuild but could be any) and transforms it into a template_config.json 
+          # file that can be used as parameters file for CloudFormation.
+          def handler(event, context):
+            job = event['CodePipeline.job']
+            
+            try:
+              # Read SSM Key Name from User Parameters passed to Lambda
+              key_name = job['data']['actionConfiguration']['configuration']['UserParameters']
+              
+              # Read reference to input artifact
+              input_artifacts = read_artifacts(job['data']['inputArtifacts'])
+
+              # Get recent version and increase by one
+              version = get_next_version(key_name)
+
+              # Then, tell CodePipeline the job succeeded, returning output variables
+              codepipeline.put_job_success_result(
+                jobId=job['id'], 
+                executionDetails={
+                  'summary': 'Automation job succeeded'
+                },
+                outputVariables={
+                  "BucketName": input_artifacts['bucket_name'],
+                  "ObjectKey": input_artifacts['object_key'],
+                  "Version": version
+                }
+              )
+            except Exception as e:
+              # In case of any exception, tell CodePipeline the job FAILED
+              print(e)
+              codepipeline.put_job_failure_result(jobId=job['id'], failureDetails={
+                'message': 'Automation job failed with Exception', 
+                'type': 'JobFailed'
+              })
+              return
+
+          # Utility function for extracting input/output artifact references from
+          # CodePipeline
+          def read_artifacts(artifacts):
+            result = {
+              'name': 'unknown',
+              'object_key': 'unknown',
+              'bucket_name': 'unknown'
+            }
+            for artifact in artifacts:
+              if 'location' in artifact.keys():
+                location = artifact['location']
+                if location['type'] == 'S3':
+                  result['object_key'] = location['s3Location']['objectKey']
+                  result['bucket_name'] = location['s3Location']['bucketName']
+
+              elif 'name' in artifact.keys():
+                result['name'] = artifact['name']
+
+            return result
+
+          # Read current version from SSM Parameter Store (if any), increase and store back
+          def get_next_version(key_name):
+            param_exists = ssm.describe_parameters(
+              ParameterFilters=[
+                {
+                  'Key': 'Name',
+                  'Values': [key_name]
+                }
+              ])
+
+            current_version = default_version
+            if len(param_exists['Parameters']) > 0:
+              param = ssm.get_parameter(Name=key_name)
+              current_version = param['Parameter']['Value']
+
+            new_version = increment_version(current_version)
+
+            ssm.put_parameter(
+              Name=key_name, 
+              Value=new_version, 
+              Type='String', 
+              Overwrite=True
+            )
+
+            return current_version
+
+          # Utility function to increase version by 1
+          def increment_version(current_version):
+            version_no = current_version.split('.')
+            version_no[len(version_no) - 1] = str(int(version_no[len(version_no) - 1]) + 1)
+            return '.'.join(version_no)
+      Handler: index.handler
+      Role: !GetAtt BuildImgParamLambdaRole.Arn
+      Runtime: python3.7
+      Timeout: 30
+  # S3 Bucket to contain the build artifacts from CodeBuild in order to
+  # hand them over to CloudFormation
+  DemoArtifactBucket:
+    Type: AWS::S3::Bucket
+    # Take care: After deleting the CloudFormation template, this bucket
+    # is retained. So full clean up requires manual steps. The alternative
+    # of a Delete policy is practically not better since it still requires
+    # manual steps to empty the bucket to avoid error messages upon
+    # template removal.
+    UpdateReplacePolicy: Retain
+    DeletionPolicy: Retain
+  # Role assumed by AWS Codepipeline overall; see the 
+  # policy for detail
+  InitiatePipelineRule:
+    Type: AWS::Events::Rule
+    Properties:
+      EventPattern:
+        source:
+          - aws.codecommit
+        detail-type:
+          - 'CodeCommit Repository State Change'
+        resources:
+          - !Sub "arn:${AWS::Partition}:codecommit:${AWS::Region}:${AWS::AccountId}:${AWS::StackName}-Repository"
+        detail:
+          event:
+            - referenceCreated
+            - referenceUpdated
+          referenceType:
+            - branch
+          referenceName:
+            - master
+      Targets:
+        - Arn: !Sub "arn:${AWS::Partition}:codepipeline:${AWS::Region}:${AWS::AccountId}:${DemoPipeline}"
+          RoleArn: !GetAtt InitiatePipelineRole.Arn
+          Id: !Sub "${AWS::StackName}-InitiatePipeline"
+  # Role assumed by AWS Codepipeline overall, allowing access to S3, CodeCommit, 
+  # CodeBuild and allowing AWS Codepipeline actions to assume roles to initiate 
+  # AWS Lambda and AWS Cloudformation templates
+  DemoPipelineRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Action: sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service: codepipeline.amazonaws.com
+  # Role assumed by AWS CodeBuild to perform the compilation; see the 
+  # attached policy for detail
+  CodeBuildRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Action: sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+  # Role assumed by AWS Lambda function itself to prepare parameters
+  # for the next stage
+  BuildImgParamLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Action: sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+      ManagedPolicyArns: 
+        - !Sub "arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+  # Role assumed by the specific action in CodePipeline that calls the
+  # AWS Lambda that prepares parameters for the next stage
+  BuildImgParamActionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Action: sts:AssumeRole
+            Effect: Allow
+            Principal:
+              AWS: !Sub "arn:${AWS::Partition}:iam::${AWS::AccountId}:root"
+  # Role assumed by AWS CloudFormation to call EC2 Image Builder and
+  # build the AMI
+  BuildImgCFRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Action: sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service: cloudformation.amazonaws.com
+  # Role assumed by the specific action in CodePipeline that calls 
+  # CloudFormation to GENERATE a change set for calling EC2 Image Builder
+  BuildImgCreateActionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Action: sts:AssumeRole
+            Effect: Allow
+            Principal:
+              AWS: !Sub "arn:${AWS::Partition}:iam::${AWS::AccountId}:root"
+  # Role assumed by the specific action in CodePipeline that calls 
+  # CloudFormation to apply a change set for calling EC2 Image Builder
+  BuildImgApplyActionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Action: sts:AssumeRole
+            Effect: Allow
+            Principal:
+              AWS: !Sub "arn:${AWS::Partition}:iam::${AWS::AccountId}:root"
+  # Role assumed by AWS CloudFormation to create a LaunchTemplate version
+  # and perform a rolling deployment on the AutoScalingGroup
+  DeployImgCFRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Action: sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service: cloudformation.amazonaws.com
+      ManagedPolicyArns:
+      - !Sub "arn:${AWS::Partition}:iam::aws:policy/AWSImageBuilderReadOnlyAccess"
+  # Role assumed by the specific action in CodePipeline that calls 
+  # CloudFormation to GENERATE a change set for rolling out the AMI
+  DeployImgCreateActionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Action: sts:AssumeRole
+            Effect: Allow
+            Principal:
+              AWS: !Sub "arn:${AWS::Partition}:iam::${AWS::AccountId}:root"
+  # Role assumed by the specific action in CodePipeline that calls 
+  # CloudFormation to apply a change set for rolling out the AMI
+  DeployImgApplyActionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Action: sts:AssumeRole
+            Effect: Allow
+            Principal:
+              AWS: !Sub "arn:${AWS::Partition}:iam::${AWS::AccountId}:root"
+  # Role assumed by temporary EC2 instance used by EC2 Image Builder while
+  # building the new AMI
+  BuildImgEC2Role:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Action: sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service: !Sub "ec2.${AWS::URLSuffix}"
+      ManagedPolicyArns:
+        - !Sub "arn:${AWS::Partition}:iam::aws:policy/AmazonSSMManagedInstanceCore"
+        - !Sub "arn:${AWS::Partition}:iam::aws:policy/EC2InstanceProfileForImageBuilder"
+  # Role assumed by AWS CloudWatch Event Rules to initiate AWS Codepipeline 
+  # upon a commit to the master branch in AWS CodeCommit
+  InitiatePipelineRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Action: sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service:
+                - events.amazonaws.com
+  # EC2 Instance Profile to allow emporary EC2 instance used by EC2 Image Builder 
+  # to assume its role
+  BuildImgEC2InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref BuildImgEC2Role
+  # IAM Policy for AWS Codepipeline overall; mainly to allow access to
+  # CodeCommit, CodeBuild, the S3 bucket for artifacts and permission
+  # to assume the respective roles for lambda and cloudformation actions
+  DemoPipelinePolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Action:
+              - codebuild:BatchGetBuilds
+              - codebuild:StartBuild
+              - codebuild:StopBuild
+            Effect: Allow
+            Resource: !GetAtt DemoCodeBuild.Arn
+          - Action:
+              - codecommit:CancelUploadArchive
+              - codecommit:GetBranch
+              - codecommit:GetCommit
+              - codecommit:GetUploadArchiveStatus
+              - codecommit:UploadArchive
+            Effect: Allow
+            Resource: !GetAtt DemoRepository.Arn
+          - Action:
+              - s3:GetObject
+              - s3:ListBucket
+              - s3:PutObject
+            Effect: Allow
+            Resource: 
+              - !GetAtt DemoArtifactBucket.Arn
+              - !Sub "${DemoArtifactBucket.Arn}/*"
+          - Action: sts:AssumeRole
+            Effect: Allow
+            Resource: !GetAtt BuildImgParamActionRole.Arn
+          - Action: sts:AssumeRole
+            Effect: Allow
+            Resource: !GetAtt BuildImgCFRole.Arn
+          - Action: sts:AssumeRole
+            Effect: Allow
+            Resource: !GetAtt BuildImgCreateActionRole.Arn
+          - Action: sts:AssumeRole
+            Effect: Allow
+            Resource: !GetAtt BuildImgApplyActionRole.Arn
+          - Action: sts:AssumeRole
+            Effect: Allow
+            Resource: !GetAtt DeployImgCFRole.Arn
+          - Action: sts:AssumeRole
+            Effect: Allow
+            Resource: !GetAtt DeployImgCreateActionRole.Arn
+          - Action: sts:AssumeRole
+            Effect: Allow
+            Resource: !GetAtt DeployImgApplyActionRole.Arn
+      Roles:
+        - Ref: DemoPipelineRole
+  # Policy for AWS CodeBuild to perform the compilation; mainly needs 
+  # access to S3 bucket for storing artifacts and to CloudWatch Logs
+  CodeBuildPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Action:
+              - logs:CreateLogGroup
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+            Effect: Allow
+            Resource:
+              - !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/${DemoCodeBuild}"
+              - !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/${DemoCodeBuild}:*"
+          - Action:
+              - s3:GetObject
+              - s3:ListBucket
+              - s3:PutObject
+            Effect: Allow
+            Resource:
+              - !GetAtt DemoArtifactBucket.Arn
+              - !Sub "${DemoArtifactBucket.Arn}/*"
+      Roles:
+        - Ref: CodeBuildRole
+  # Policy for the specific action in CodePipeline that calls the
+  # AWS Lambda that prepares parameters for the next stage. Uses SSM
+  # Paraemeter store to keep the latest version number. Posts result 
+  # back to CodePipeline.
+  BuildImgParamLambdaPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Action:
+              - codepipeline:PutJobSuccessResult
+              - codepipeline:PutJobFailureResult
+            Effect: Allow
+            Resource: "*"
+          - Action:
+              - ssm:DescribeParameters
+            Effect: Allow
+            Resource: !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:*"
+          - Action:
+              - ssm:PutParameter
+              - ssm:GetParameter
+            Effect: Allow
+            Resource: !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${AWS::StackName}/ImageVersion"
+      Roles:
+        - Ref: BuildImgParamLambdaRole
+  # Policy for the specific action in CodePipeline that calls the
+  # AWS Lambda that prepares parameters for the next stage
+  BuildImgParamActionPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Action: lambda:InvokeFunction
+            Effect: Allow
+            Resource: !GetAtt BuildImgParamLambda.Arn
+          - Action: lambda:ListFunctions
+            Effect: Allow
+            Resource: "*"
+      Roles:
+        - Ref: BuildImgParamActionRole
+  # Policy for AWS CloudFormation to call EC2 Image Builder and
+  # build the AMI
+  BuildImgCFPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Action:
+              - iam:CreateServiceLinkedRole
+            Effect: Allow
+            Resource:
+              - !Sub "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/aws-service-role/imagebuilder.amazonaws.com/AWSServiceRoleForImageBuilder"
+            Condition:
+              StringLike:
+                iam:AWSServiceName: "imagebuilder.amazonaws.com"
+          - Action:
+              - iam:GetInstanceProfile
+            Effect: Allow
+            Resource:
+              - !GetAtt BuildImgEC2InstanceProfile.Arn
+              - !Sub "arn:${AWS::Partition}:iam::${AWS::AccountId}:instance-profile/*imagebuilder*"
+          - Action:
+              - iam:GetRole
+            Effect: Allow
+            Resource:
+              - !Sub "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/aws-service-role/imagebuilder.amazonaws.com/AWSServiceRoleForImageBuilder"
+          - Action:
+              - iam:ListInstanceProfiles
+              - iam:ListRoles
+            Effect: Allow
+            Resource: "*"
+          - Action:
+              - iam:PassRole
+            Effect: Allow
+            Resource:
+              - !GetAtt BuildImgEC2Role.Arn
+              - !Sub "arn:${AWS::Partition}:iam::${AWS::AccountId}:instance-profile/*imagebuilder*"
+              - !Sub "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/*imagebuilder*"
+            Condition:
+              StringEquals:
+                iam:PassedToService: "ec2.amazonaws.com"
+          - Action:
+              - imagebuilder:GetImage
+              - imagebuilder:GetComponent
+              - imagebuilder:CreateImage
+              - imagebuilder:GetInfrastructureConfiguration
+              - imagebuilder:DeleteImage
+              - imagebuilder:CreateComponent
+              - imagebuilder:DeleteComponent
+              - imagebuilder:GetImageRecipe
+              - imagebuilder:CreateImageRecipe
+              - imagebuilder:DeleteImageRecipe
+              - imagebuilder:CreateInfrastructureConfiguration
+              - imagebuilder:DeleteInfrastructureConfiguration
+              - imagebuilder:UpdateInfrastructureConfiguration
+              - imagebuilder:TagResource
+              - imagebuilder:UntagResource
+            Effect: Allow
+            Resource: 
+              - !Sub "arn:${AWS::Partition}:imagebuilder:${AWS::Region}:${AWS::AccountId}:image/*/*"
+              - !Sub "arn:${AWS::Partition}:imagebuilder:${AWS::Region}:${AWS::AccountId}:image/*/*/*"
+              - !Sub "arn:${AWS::Partition}:imagebuilder:${AWS::Region}:${AWS::AccountId}:image-recipe/*/*"
+              - !Sub "arn:${AWS::Partition}:imagebuilder:${AWS::Region}:${AWS::AccountId}:component/*/*"
+              - !Sub "arn:${AWS::Partition}:imagebuilder:${AWS::Region}:${AWS::AccountId}:component/*/*/*"
+              - !Sub "arn:${AWS::Partition}:imagebuilder:${AWS::Region}:${AWS::AccountId}:infrastructure-configuration/*"           
+      Roles:
+        - Ref: BuildImgCFRole
+  # Policy for the specific action in CodePipeline that calls 
+  # CloudFormation to GENERATE a change set for rolling out the AMI
+  BuildImgCreateActionPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Action:
+              - cloudformation:CreateChangeSet
+              - cloudformation:DeleteChangeSet
+              - cloudformation:DescribeChangeSet
+              - cloudformation:DescribeStacks
+            Condition:
+              StringEqualsIfExists:
+                cloudformation:ChangeSetName: buildimage
+            Effect: Allow
+            Resource: !Sub "arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${AWS::StackName}-BuildImg/*"
+          - Action: iam:PassRole
+            Effect: Allow
+            Resource: !GetAtt BuildImgCFRole.Arn
+          - Action:
+              - s3:GetObject
+              - s3:ListBucket
+            Effect: Allow
+            Resource: 
+              - !GetAtt DemoArtifactBucket.Arn
+              - !Sub "${DemoArtifactBucket.Arn}/*"
+      Roles:
+        - Ref: BuildImgCreateActionRole
+  # Policy for the specific action in CodePipeline that calls 
+  # CloudFormation to apply a change set for calling EC2 Image Builder
+  BuildImgApplyActionPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Action:
+              - cloudformation:DescribeChangeSet
+              - cloudformation:DescribeStacks
+              - cloudformation:ExecuteChangeSet
+            Condition:
+              StringEqualsIfExists:
+                cloudformation:ChangeSetName: buildimage
+            Effect: Allow
+            Resource: !Sub "arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${AWS::StackName}-BuildImg/*"
+      Roles:
+        - Ref: BuildImgApplyActionRole
+  # Policy for AWS CloudFormation to create a LaunchTemplate version
+  # and perform a rolling deployment on the AutoScalingGroup
+  DeployImgCFPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Action:
+              - autoscaling:CreateAutoScalingGroup
+              - autoscaling:DeleteAutoScalingGroup
+              - autoscaling:DeletePolicy   
+              - autoscaling:ApplyPolicy
+              - autoscaling:PutScalingPolicy
+              - autoscaling:SetDesiredCapacity
+              - autoscaling:SetInstanceHealth
+              - autoscaling:TerminateInstanceInAutoScalingGroup
+              - autoscaling:UpdateAutoScalingGroup
+            Effect: Allow
+            Resource:
+              - !Sub "arn:${AWS::Partition}:autoscaling:${AWS::Region}:${AWS::AccountId}:autoScalingGroup:*:autoScalingGroupName/${AWS::StackName}-*"
+          - Action:
+              - autoscaling:DescribeAutoScalingGroups
+              - autoscaling:DescribeScalingActivities
+              - autoscaling:DescribeScheduledActions
+            Effect: Allow
+            Resource: "*"
+          - Action:
+              - cloudformation:ExecuteChangeSet
+              - cloudformation:DescribeStacks
+              - cloudformation:DescribeChangeSet
+            Effect: Allow
+            Resource: !Sub "arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${AWS::StackName}-DeployImg/*"
+          - Action:
+                - ec2:CreateTags
+            Effect: Allow
+            Resource: 
+              - !Sub "arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:instance/*"
+              - !Sub "arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:network-interface/*"
+              - !Sub "arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:volume/*"
+              - !Sub "arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:launch-template/*"
+            Condition:
+              StringEquals:
+                ec2:CreateAction: RunInstances
+          - Action:
+              - ec2:CreateLaunchTemplate
+              - ec2:CreateLaunchTemplateVersion
+            Effect: Allow
+            Resource: !Sub "arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:launch-template/*"
+          - Action:
+              - ec2:DescribeLaunchTemplates
+              - ec2:DescribeLaunchTemplateVersions
+              - ec2:GetLaunchTemplateData
+            Effect: Allow
+            Resource: "*"
+          - Action:
+              - ec2:DescribeAccountAttributes
+              - ec2:DescribeAvailabilityZones
+              - ec2:DescribeImages
+              - ec2:DescribeInstanceAttribute
+              - ec2:DescribeInstances
+              - ec2:DescribeKeyPairs
+              - ec2:DescribeLaunchTemplateVersions
+              - ec2:DescribePlacementGroups
+              - ec2:DescribeSecurityGroups
+              - ec2:DescribeSpotInstanceRequests
+              - ec2:DescribeSubnets
+              - ec2:DescribeVpcClassicLink
+            Effect: Allow
+            Resource: "*"
+          - Action:
+              - ec2:DeleteLaunchTemplate
+              - ec2:DeleteLaunchTemplateVersions
+              - ec2:ModifyLaunchTemplate
+            Effect: Allow
+            Resource: !Sub "arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:launch-template/*"
+          - Action:
+              - ec2:RunInstances
+            Effect: Allow
+            Resource: 
+              - !Sub "arn:${AWS::Partition}:ec2:${AWS::Region}::image/ami-*"
+              - !Sub "arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:security-group/*"
+              - !Sub "arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:subnet/*"
+              - !Sub "arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:network-interface/*"
+          - Action:
+              - ec2:RunInstances
+            Effect: Allow
+            Resource: 
+              - !Sub "arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:instance/*"
+            Condition:
+              Bool:
+                ec2:IsLaunchTemplateResource: true
+              StringEquals:
+                ec2:InstanceType: !Ref InstanceType
+          - Action:
+              - ec2:RunInstances
+            Effect: Allow
+            Resource: 
+              - !Sub "arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:volume/*"
+              - !Sub "arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:launch-template/*"
+            Condition:
+              Bool:
+                ec2:IsLaunchTemplateResource: true
+          - Action:
+              - iam:CreateServiceLinkedRole
+            Effect: Allow
+            Resource:
+              - !Sub "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/aws-service-role/autoscaling.amazonaws.com/AWSServiceRoleForAutoScaling"
+            Condition:
+              StringLike:
+                iam:AWSServiceName: "autoscaling.amazonaws.com"
+      Roles:
+        - Ref: DeployImgCFRole
+  # Policy for the specific action in CodePipeline that calls 
+  # CloudFormation to GENERATE a change set for rolling out the AMI
+  DeployImgCreateActionPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Action: iam:PassRole
+            Effect: Allow
+            Resource: !GetAtt DeployImgCFRole.Arn
+          - Action:
+              - s3:GetObject
+              - s3:ListBucket
+            Effect: Allow
+            Resource: 
+              - !GetAtt DemoArtifactBucket.Arn
+              - !Sub "${DemoArtifactBucket.Arn}/*"
+          - Action:
+              - cloudformation:CreateChangeSet
+              - cloudformation:DeleteChangeSet
+              - cloudformation:DescribeChangeSet
+              - cloudformation:DescribeStacks
+            Condition:
+              StringEqualsIfExists:
+                cloudformation:ChangeSetName: deployimage
+            Effect: Allow
+            Resource: !Sub "arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${AWS::StackName}-DeployImg/*"
+      Roles:
+        - Ref: DeployImgCreateActionRole
+  # Policy for the specific action in CodePipeline that calls 
+  # CloudFormation to apply a change set for rolling out the AMI
+  DeployImgApplyActionPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Action:
+              - cloudformation:DescribeChangeSet
+              - cloudformation:DescribeStacks
+              - cloudformation:ExecuteChangeSet
+            Condition:
+              StringEqualsIfExists:
+                cloudformation:ChangeSetName: deployimage
+            Effect: Allow
+            Resource: !Sub "arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${AWS::StackName}-DeployImg/*"
+      Roles:
+        - Ref: DeployImgApplyActionRole
+  # Policy for the temporary EC2 instance used by EC2 Image Builder while
+  # building the new AMI
+  BuildImgEC2Policy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Action:
+              - s3:GetObject
+              - s3:ListBucket
+            Effect: Allow
+            Resource: 
+              - !GetAtt DemoArtifactBucket.Arn
+              - !Sub "${DemoArtifactBucket.Arn}/*"
+      Roles:
+        - Ref: BuildImgEC2Role
+  # Policy to allow AWS CloudWatch Event Rules to initiate AWS Codepipeline 
+  # upon a commit to the master branch in AWS CodeCommit
+  InitiatePipelinePolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Action: codepipeline:StartPipelineExecution
+            Effect: Allow
+            Resource: !Sub "arn:${AWS::Partition}:codepipeline:${AWS::Region}:${AWS::AccountId}:${DemoPipeline}"
+      Roles:
+        - Ref: InitiatePipelineRole
