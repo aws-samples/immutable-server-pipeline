@@ -1,0 +1,132 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+Parameters: 
+  BucketName: 
+    Type: "String"
+    Description: "S3 Bucket containing build artifacts; should come from the CodeBuild step in Codepipeline"
+  ObjectKey: 
+    Type: String
+    Description: "Specific reference to the build file within the bucket; should come from the CodeBuild step in Codepipeline"
+  Version:
+    Type: String
+    Description: "Version number for the ImageBuilder Component; provided by AWS Lambda in previous preparation step."
+  Architecture:
+    Type: "String"
+    Description: "Select between x86 and ARM instances"
+  InstanceType:
+    Type: "String"
+    Description: "Instance Type for building the instances"
+  InstanceProfile:
+    Type: "String"
+    Description: "Instance Profile required for EC2 during the build of the instance"
+Resources:
+  # This Component in the EC2 Image Builder setup contains the main logi
+  # for installing the AMI. In this demo, the full script is inline. This
+  # could be modified to read a script from an S3 bucket the same way that
+  # the main build artifact is taken from an S3 bucket. Since this Cloud-
+  # Formation template itself is also in Version Control, it can easily
+  # be updated when needed for demo purposes.
+  DemoComponent:
+    Type: AWS::ImageBuilder::Component
+    Properties: 
+      ChangeDescription: !Sub 
+        - "Update ${ShortName} Image (${Architecture}) to version ${Version}"
+        - ShortName: !Select [0, !Split ['-', !Ref AWS::StackName]]
+      Data: !Sub |
+        name: Spring Boot Application on Amazon Linux 2
+        description: Current version - ${Version}
+        schemaVersion: 1.0
+        phases:
+          - name: build
+            steps:
+              - name: HelloWorldStep
+                action: ExecuteBash
+                inputs:
+                  commands:
+                    - cd /opt
+                    - sudo su
+                    - yum install -y java-11-amazon-corretto
+                    - useradd springboot
+                    - result=`aws s3 cp s3://${BucketName}/${ObjectKey} /tmp`
+                    - destination=${!result##* }
+                    - unzip $destination && mv target springboot
+                    - chown -R springboot:springboot springboot
+                    - rm -rf $destination
+                    - echo "[Unit]" > /etc/systemd/system/springboot.service
+                    - echo "Description=Test Spring Boot Getting Started" >> /etc/systemd/system/springboot.service
+                    - echo "After=syslog.target" >> /etc/systemd/system/springboot.service
+                    - echo "" >> /etc/systemd/system/springboot.service
+                    - echo "[Service]" >> /etc/systemd/system/springboot.service
+                    - echo "User=springboot" >> /etc/systemd/system/springboot.service
+                    - echo "WorkingDirectory=/opt/springboot" >> /etc/systemd/system/springboot.service
+                    - echo "ExecStart=/usr/bin/java -jar /opt/springboot/gs-spring-boot-0.1.0.jar" >> /etc/systemd/system/springboot.service
+                    - echo "SuccessExitStatus=143" >> /etc/systemd/system/springboot.service
+                    - echo "" >> /etc/systemd/system/springboot.service
+                    - echo "[Install]" >> /etc/systemd/system/springboot.service
+                    - echo "WantedBy=multi-user.target" >> /etc/systemd/system/springboot.service
+                    - systemctl daemon-reload
+                    - systemctl enable springboot.service
+          - name: validate
+            steps:
+              - name: HelloWorldStep
+                action: ExecuteBash
+                inputs:
+                  commands:
+                    - systemctl is-enabled --quiet springboot.service
+          - name: test
+            steps:
+              - name: HelloWorldStep
+                action: ExecuteBash
+                inputs:
+                  commands:
+                    - systemctl is-active --quiet springboot.service
+                    - curl --fail http://localhost:8080/
+      Description: !Sub 
+        - "${ShortName} Component"
+        - ShortName: !Select [0, !Split ['-', !Ref AWS::StackName]]
+      Name: !Sub "${AWS::StackName}-Component"
+      Platform: Linux
+      Version: !Sub ${Version}
+  # Image is the ultimate outcome of the EC2 Image Builder process. Notice
+  # the reference to this item in the Outputs. It comnbines the Recipe with
+  # the Infrastructure Configuration.
+  DemoImage:
+    Type: AWS::ImageBuilder::Image
+    Properties: 
+      ImageRecipeArn: !GetAtt DemoImageRecipe.Arn
+      InfrastructureConfigurationArn: !GetAtt DemoInfrastructureConfiguration.Arn
+      Tags:
+        Application: 'DemoImageBuilder'
+  # The recipe is a set of Components required to build an Image. In this case
+  # we need only a single component as it contains all the logic in one.
+  DemoImageRecipe:
+    Type: AWS::ImageBuilder::ImageRecipe
+    Properties: 
+      Components: 
+        - ComponentArn: !GetAtt DemoComponent.Arn
+      # This becomes the AMI description
+      Description: !Sub 
+        - "${ShortName} Image (${Architecture}) version ${Version}"
+        - ShortName: !Select [0, !Split ['-', !Ref AWS::StackName]]
+      Name: !Sub 
+        - "${ShortName}-Image"
+        - ShortName: !Select [0, !Split ['-', !Ref AWS::StackName]]
+      ParentImage: !Sub "arn:aws:imagebuilder:${AWS::Region}:aws:image/amazon-linux-2-${Architecture}/x.x.x"
+      Version: !Sub ${Version}
+  # The infrastructure configuration specifies the machine type and role name.
+  # For this purpose, a t3.nano or t3a.nano is sufficient and helps keep
+  # cost low.
+  DemoInfrastructureConfiguration:
+    Type: AWS::ImageBuilder::InfrastructureConfiguration
+    Properties: 
+      InstanceProfileName: !Sub "${InstanceProfile}"
+      InstanceTypes: 
+        - !Sub "${InstanceType}"
+      Name: !Sub "${AWS::StackName}-InfraConfig"
+Outputs:
+  DemoImageArn:
+    Description: Reference to EC2 Image Builder Output Arn
+    Value: !GetAtt DemoImage.Arn
+  DemoImageId:
+    Description: Reference to EC2 Image Builder Output ImageId
+    Value: !GetAtt DemoImage.ImageId

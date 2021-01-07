@@ -1,0 +1,102 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+Parameters: 
+  AmiId: 
+    Type: "AWS::EC2::Image::Id"
+    Description: Identifier of new AMI to be deployed
+  Version: 
+    Type: "String"
+    Description: Version of the software deployed
+  SourceAuthorDate:
+    Type: "String"
+    Description: "Source parameter Author Date provided by AWS CodeCommit through AWS CodePipeline"
+  SourceBranchName:
+    Type: "String"
+    Description: "Source parameter Branch Name provided by AWS CodeCommit through AWS CodePipeline"
+  SourceCommitId:
+    Type: "String"
+    Description: "Source parameter Commit ID provided by AWS CodeCommit through AWS CodePipeline"
+  SourceCommitMessage:
+    Type: "String"
+    Description: "Source parameter Commit Message provided by AWS CodeCommit through AWS CodePipeline"
+  SourceCommitterDate:
+    Type: "String"
+    Description: "Source parameter Commit Date provided by AWS CodeCommit through AWS CodePipeline"
+  SourceRepositoryName:
+    Type: "String"
+    Description: "Source parameter Repository Name provided by AWS CodeCommit through AWS CodePipeline"
+  Subnets:
+    Type: "String"
+    Description: "Subnets where ASG should deploy the new instances"
+  InstanceType:
+    Type: "String"
+    Description: "Instance Type for running the instances"
+Resources:
+  # Metadata around AMI to roll it out to a Development environment
+  # using an AutoScalingGroup
+  LaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateName: !Sub "${AWS::StackName}-Template"
+      LaunchTemplateData:
+        ImageId: !Ref AmiId
+        InstanceType: !Sub "${InstanceType}"
+        BlockDeviceMappings:
+          - DeviceName:  "/dev/xvda"
+            Ebs:
+              DeleteOnTermination: true
+              Encrypted: true
+        TagSpecifications:
+          - ResourceType: instance
+            Tags:
+              - Key: Application
+                Value: !Sub
+                  - "${ShortName}"
+                  - ShortName: !Select [0, !Split ['-', !Ref AWS::StackName]]
+              - Key: Name
+                Value: !Sub
+                  - "${ShortName} version ${Version}"
+                  - ShortName: !Select [0, !Split ['-', !Ref AWS::StackName]]
+              - Key: Version
+                Value: !Sub "${Version}"
+              - Key: "Source/AuthorDate"
+                Value: !Sub "${SourceAuthorDate}"
+              - Key: "Source/BranchName"
+                Value: !Sub "${SourceBranchName}"
+              - Key: "Source/CommitId"
+                Value: !Sub "${SourceCommitId}"
+              - Key: "Source/CommitMessage"
+                Value: !Sub "${SourceCommitMessage}"
+              - Key: "Source/CommitterDate"
+                Value: !Sub "${SourceCommitterDate}"
+              - Key: "Source/RepositoryName"
+                Value: !Sub "${SourceRepositoryName}"
+          - ResourceType: volume
+            Tags:
+              - Key: Application
+                Value: !Sub
+                  - "${ShortName}"
+                  - ShortName: !Select [0, !Split ['-', !Ref AWS::StackName]]
+              - Key: Name
+                Value: !Sub
+                  - "${ShortName} version ${Version}"
+                  - ShortName: !Select [0, !Split ['-', !Ref AWS::StackName]]
+  # AutoScalingGroup used as Development Environment for rolling out
+  # the newly created AMI
+  AutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      MinSize: "0"
+      MaxSize: "3"
+      # Please REMOVE the next line if you want to avoid interfering
+      # with existing capacity in the ASG
+      DesiredCapacity: "1"
+      LaunchTemplate:
+        LaunchTemplateId: !Ref LaunchTemplate
+        Version: !GetAtt LaunchTemplate.LatestVersionNumber
+      VPCZoneIdentifier: !Split [ ",", !Sub "${Subnets}"]
+    UpdatePolicy:
+      AutoScalingRollingUpdate:
+        MinInstancesInService: 1
+        MaxBatchSize: 2
+        PauseTime: PT10S
