@@ -1,6 +1,6 @@
 ## AWS Sample: Immutable Server Pipeline
 
-This code sample supports the forthcoming blog post "Create immutable servers using EC2 Image Builder and AWS CodePipeline". The blog post contains an AWS CloudFormation quick-create link to launch the pipeline. This repository contains the source code and detailed instructions so you can customize the example pipeline.
+This code sample supports the blog post ["Create immutable servers using EC2 Image Builder and AWS CodePipeline"](https://aws.amazon.com/blogs/mt/create-immutable-servers-using-ec2-image-builder-aws-codepipeline/). The blog post contains an AWS CloudFormation quick-create link to launch the pipeline. This repository contains the source code and detailed instructions so you can customize the example pipeline.
 
 ## Prerequisites
 
@@ -193,7 +193,7 @@ This repository contains multiple files and folders. For the purpose of understa
 
 ## Detailed overview of resources created by AWS CloudFormation
 
-The forthcoming blog post gives an explanation of the high level architecture for this pipeline that builds AMIs. For your convenience, here is the illustration:
+The [blog post](https://aws.amazon.com/blogs/mt/create-immutable-servers-using-ec2-image-builder-aws-codepipeline/) gives an explanation of the high level architecture for this pipeline that builds AMIs. For your convenience, here is the illustration:
 
 ![High Level Architecture](images/architecture-high-level.png)
 
