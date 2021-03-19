@@ -54,7 +54,7 @@ Resources:
               Name: source
               Configuration:
                 RepositoryName: !Sub "${AWS::StackName}-Repository"
-                BranchName: master
+                BranchName: main
                 PollForSourceChanges: 'false'
               RunOrder: 1
               Namespace: SourceVars
@@ -358,7 +358,7 @@ Resources:
           referenceType:
             - branch
           referenceName:
-            - master
+            - main
       Targets:
         - Arn: !Sub "arn:${AWS::Partition}:codepipeline:${AWS::Region}:${AWS::AccountId}:${DemoPipeline}"
           RoleArn: !GetAtt InitiatePipelineRole.Arn
@@ -504,7 +504,7 @@ Resources:
         - !Sub "arn:${AWS::Partition}:iam::aws:policy/AmazonSSMManagedInstanceCore"
         - !Sub "arn:${AWS::Partition}:iam::aws:policy/EC2InstanceProfileForImageBuilder"
   # Role assumed by AWS CloudWatch Event Rules to initiate AWS Codepipeline 
-  # upon a commit to the master branch in AWS CodeCommit
+  # upon a commit to the main branch in AWS CodeCommit
   InitiatePipelineRole:
     Type: AWS::IAM::Role
     Properties:
@@ -943,6 +943,7 @@ Resources:
         - Ref: BuildImgEC2Role
   # Policy to allow AWS CloudWatch Event Rules to initiate AWS Codepipeline 
   # upon a commit to the master branch in AWS CodeCommit
+  # upon a commit to the main branch in AWS CodeCommit
   InitiatePipelinePolicy:
     Type: AWS::IAM::ManagedPolicy
     Properties:
