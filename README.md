@@ -206,7 +206,7 @@ Below is a description for each role in the diagram. Note that you will find the
 | Role Name | Description |
 | --- | --- |
 | DemoPipelineRole | Role assumed by AWS Codepipeline overall, to access S3, CodeCommit, CodeBuild and for AWS Codepipeline actions to assume roles to invoke AWS Lambda and AWS Cloudformation templates | 
-| InitiatePipelineRole | Role assumed by AWS CloudWatch Event Rules to start AWS Codepipeline upon a commit to the master branch in AWS CodeCommit |
+| InitiatePipelineRole | Role assumed by AWS CloudWatch Event Rules to start AWS Codepipeline upon a commit to the main branch in AWS CodeCommit |
 | CodeBuildRole | Role assumed by AWS CodeBuild to perform the compilation | 
 | BuildImgParamLambdaRole | Role assumed by AWS Lambda function itself to prepare parameters for the next stage | 
 | BuildImgParamActionRole | Role assumed by the specific action in CodePipeline that calls the AWS Lambda that prepares parameters for the next stage | 
