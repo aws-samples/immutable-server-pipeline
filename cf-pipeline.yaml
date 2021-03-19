@@ -942,7 +942,6 @@ Resources:
       Roles:
         - Ref: BuildImgEC2Role
   # Policy to allow AWS CloudWatch Event Rules to initiate AWS Codepipeline 
-  # upon a commit to the master branch in AWS CodeCommit
   # upon a commit to the main branch in AWS CodeCommit
   InitiatePipelinePolicy:
     Type: AWS::IAM::ManagedPolicy
