@@ -706,7 +706,7 @@ Resources:
             Effect: Allow
             Resource: 
               - !Sub "arn:${AWS::Partition}:imagebuilder:${AWS::Region}:${AWS::AccountId}:image/*/*"
-              - !Sub "arn:${AWS::Partition}:imagebuilder:${AWS::Region}:${AWS::AccountId}:image/*/*/*"
+              - !Sub "arn:${AWS::Partition}:imagebuilder:${AWS::Region}:*:image/amazon-linux-2-*/*/*"
               - !Sub "arn:${AWS::Partition}:imagebuilder:${AWS::Region}:${AWS::AccountId}:image-recipe/*/*"
               - !Sub "arn:${AWS::Partition}:imagebuilder:${AWS::Region}:${AWS::AccountId}:component/*/*"
               - !Sub "arn:${AWS::Partition}:imagebuilder:${AWS::Region}:${AWS::AccountId}:component/*/*/*"
