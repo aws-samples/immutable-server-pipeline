@@ -12,27 +12,23 @@ Parameters:
   Subnets: 
     Type: List<AWS::EC2::Subnet::Id>
     Description: Select target subnets for autoscaling group at the end of the pipeline. These will be exported across CloudFormation stacks to avoid manual intervention at later stages in the pipeline.
-  Architecture: 
-    Type: String
-    Default: x86
-    AllowedValues: 
-      - x86
-      - arm64
-    Description: Select between Intel/AMD (x86) and ARM architecture
-  InstanceType: 
+  InstanceTypeX86: 
     Type: String
     Default: t3.nano
     AllowedValues: 
       - t2.micro
       - t3.nano
       - t3a.nano
-      - t4g.nano
-      - t4g.micro
       - m5.large
       - m5a.large
+  InstanceTypeArm64: 
+    Type: String
+    Default: t4g.nano
+    AllowedValues: 
+      - t4g.nano
+      - t4g.micro
       - m6g.medium
       - m6g.large
-    Description: For x86, select t3/m5(a). For ARM, select t4g/m6g instances
 Resources:
   # The CI/CD pipeline stitching the full mechanism together
   DemoPipeline:
@@ -93,14 +89,14 @@ Resources:
               RoleArn: !GetAtt BuildImgParamActionRole.Arn
               RunOrder: 1
               Namespace: BuildImgParamVars
-            # Create Change Set for AWS CloudFormation which in turn uses EC2 Image Builder to create a new AMI
+            # Create Change Set for AWS CloudFormation for X86 which in turn uses EC2 Image Builder to create a new AMI
             - ActionTypeId: 
                 Category: Deploy
                 Owner: AWS
                 Provider: CloudFormation
                 Version: "1"
               Configuration:
-                StackName: !Sub "${AWS::StackName}-BuildImg"
+                StackName: !Sub "${AWS::StackName}-BuildX86Img"
                 RoleArn: !GetAtt BuildImgCFRole.Arn
                 ParameterOverrides: !Sub
                   - "{${Map}}"
@@ -110,47 +106,89 @@ Resources:
                       - '"ObjectKey": "#{BuildImgParamVars.ObjectKey}"'
                       - '"Version": "#{BuildImgParamVars.Version}"'
                       - !Sub '"InstanceProfile": "${BuildImgEC2InstanceProfile}"'
-                      - !Sub '"Architecture": "${Architecture}"'
-                      - !Sub '"InstanceType": "${InstanceType}"'
+                      - !Sub '"Architecture": "x86"'
+                      - !Sub '"InstanceType": "${InstanceTypeX86}"'
                 ActionMode: CHANGE_SET_REPLACE
-                ChangeSetName: buildimage
+                ChangeSetName: buildimagex86
                 TemplatePath: source::cf-build-image.yaml
               InputArtifacts:
                 - Name: source
-              Name: create_change_set
+              Name: create_x86_build_change_set
               RoleArn: !GetAtt BuildImgCreateActionRole.Arn
               RunOrder: 2
-              Namespace: BuildImgCFParamCreateVars              
-            # Apply Change Set for AWS CloudFormation which in turn uses EC2 Image Builder to create a new AMI
+              Namespace: BuildX86ImgCFParamCreateVars
+            # Create Change Set for AWS CloudFormation for Arm64 which in turn uses EC2 Image Builder to create a new AMI
             - ActionTypeId: 
                 Category: Deploy
                 Owner: AWS
                 Provider: CloudFormation
                 Version: "1"
               Configuration:
-                StackName: !Sub "${AWS::StackName}-BuildImg"
+                StackName: !Sub "${AWS::StackName}-BuildArm64Img"
+                RoleArn: !GetAtt BuildImgCFRole.Arn
+                ParameterOverrides: !Sub
+                  - "{${Map}}"
+                  - "Map": !Join
+                    - ","
+                    - - '"BucketName": "#{BuildImgParamVars.BucketName}"'
+                      - '"ObjectKey": "#{BuildImgParamVars.ObjectKey}"'
+                      - '"Version": "#{BuildImgParamVars.Version}"'
+                      - !Sub '"InstanceProfile": "${BuildImgEC2InstanceProfile}"'
+                      - !Sub '"Architecture": "arm64"'
+                      - !Sub '"InstanceType": "${InstanceTypeArm64}"'
+                ActionMode: CHANGE_SET_REPLACE
+                ChangeSetName: buildimagearm64
+                TemplatePath: source::cf-build-image.yaml
+              InputArtifacts:
+                - Name: source
+              Name: create_arm64_build_change_set
+              RoleArn: !GetAtt BuildImgCreateActionRole.Arn
+              RunOrder: 2
+              Namespace: BuildArm64ImgCFParamCreateVars       
+            # Apply Change Set for AWS CloudFormation for X86 which in turn uses EC2 Image Builder to create a new AMI
+            - ActionTypeId: 
+                Category: Deploy
+                Owner: AWS
+                Provider: CloudFormation
+                Version: "1"
+              Configuration:
+                StackName: !Sub "${AWS::StackName}-BuildX86Img"
                 ActionMode: CHANGE_SET_EXECUTE
-                ChangeSetName: buildimage
-              Name: apply_change_set
+                ChangeSetName: buildimagex86
+              Name: apply_x86_build_change_set
               RoleArn: !GetAtt BuildImgApplyActionRole.Arn
               RunOrder: 3
-              Namespace: BuildImgCFParamApplyVars
-          Name: BuildImage
-        - Actions:
-            # Create Change Set for AWS CloudFormation which in turn Deploys the new AMI through an AutoScalingGroup
+              Namespace: BuildX86ImgCFParamApplyVars
+            # Apply Change Set for AWS CloudFormation for Arm64 which in turn uses EC2 Image Builder to create a new AMI
             - ActionTypeId: 
                 Category: Deploy
                 Owner: AWS
                 Provider: CloudFormation
                 Version: "1"
               Configuration:
-                StackName: !Sub "${AWS::StackName}-DeployImg"
+                StackName: !Sub "${AWS::StackName}-BuildArm64Img"
+                ActionMode: CHANGE_SET_EXECUTE
+                ChangeSetName: buildimagearm64
+              Name: apply_arm64_build_change_set
+              RoleArn: !GetAtt BuildImgApplyActionRole.Arn
+              RunOrder: 3
+              Namespace: BuildArm64ImgCFParamApplyVars
+          Name: BuildImage
+        - Actions:
+            # Create Change Set for AWS CloudFormation which in turn X86 Deploys the new AMI through an AutoScalingGroup
+            - ActionTypeId: 
+                Category: Deploy
+                Owner: AWS
+                Provider: CloudFormation
+                Version: "1"
+              Configuration:
+                StackName: !Sub "${AWS::StackName}-DeployX86Img"
                 RoleArn: !GetAtt DeployImgCFRole.Arn
                 ParameterOverrides: !Sub
                   - "{${Map}}"
                   - "Map": !Join
                     - ","
-                    - - '"AmiId": "#{BuildImgCFParamApplyVars.DemoImageId}"'
+                    - - '"AmiId": "#{BuildX86ImgCFParamApplyVars.DemoImageId}"'
                       - '"Version": "#{BuildImgParamVars.Version}"'
                       - '"SourceAuthorDate": "#{SourceVars.AuthorDate}"'
                       - '"SourceBranchName": "#{SourceVars.BranchName}"'
@@ -161,30 +199,78 @@ Resources:
                       - !Sub 
                         - '"Subnets": "${JoinSubnets}"'
                         - 'JoinSubnets': !Join [",", !Ref Subnets]
-                      - !Sub '"InstanceType": "${InstanceType}"'
+                      - !Sub '"InstanceType": "${InstanceTypeX86}"'
                 ActionMode: CHANGE_SET_REPLACE
-                ChangeSetName: deployimage
+                ChangeSetName: deployimagex86
                 TemplatePath: source::cf-deploy-image.yaml
               InputArtifacts:
                 - Name: source
-              Name: create_change_set
+              Name: create_x86_deploy_change_set
               RoleArn: !GetAtt DeployImgCreateActionRole.Arn
               RunOrder: 1
-              Namespace: DeployImgCFParamCreateVars              
-            # Apply Change Set for AWS CloudFormation which in turn Deploys the new AMI through an AutoScalingGroup
+              Namespace: DeployX86ImgCFParamCreateVars
+            # Create Change Set for AWS CloudFormation which in turn Arm64 Deploys the new AMI through an AutoScalingGroup
             - ActionTypeId: 
                 Category: Deploy
                 Owner: AWS
                 Provider: CloudFormation
                 Version: "1"
               Configuration:
-                StackName: !Sub "${AWS::StackName}-DeployImg"
+                StackName: !Sub "${AWS::StackName}-DeployArm64Img"
+                RoleArn: !GetAtt DeployImgCFRole.Arn
+                ParameterOverrides: !Sub
+                  - "{${Map}}"
+                  - "Map": !Join
+                    - ","
+                    - - '"AmiId": "#{BuildArm64ImgCFParamApplyVars.DemoImageId}"'
+                      - '"Version": "#{BuildImgParamVars.Version}"'
+                      - '"SourceAuthorDate": "#{SourceVars.AuthorDate}"'
+                      - '"SourceBranchName": "#{SourceVars.BranchName}"'
+                      - '"SourceCommitId": "#{SourceVars.CommitId}"'
+                      - '"SourceCommitMessage": "#{SourceVars.CommitMessage}"'
+                      - '"SourceCommitterDate": "#{SourceVars.CommitterDate}"'
+                      - '"SourceRepositoryName": "#{SourceVars.RepositoryName}"'
+                      - !Sub 
+                        - '"Subnets": "${JoinSubnets}"'
+                        - 'JoinSubnets': !Join [",", !Ref Subnets]
+                      - !Sub '"InstanceType": "${InstanceTypeArm64}"'
+                ActionMode: CHANGE_SET_REPLACE
+                ChangeSetName: deployimagearm64
+                TemplatePath: source::cf-deploy-image.yaml
+              InputArtifacts:
+                - Name: source
+              Name: create_arm64_deploy_change_set
+              RoleArn: !GetAtt DeployImgCreateActionRole.Arn
+              RunOrder: 1
+              Namespace: DeployArm64ImgCFParamCreateVars            
+            # Apply Change Set for AWS CloudFormation for X86 which in turn Deploys the new AMI through an AutoScalingGroup
+            - ActionTypeId: 
+                Category: Deploy
+                Owner: AWS
+                Provider: CloudFormation
+                Version: "1"
+              Configuration:
+                StackName: !Sub "${AWS::StackName}-DeployX86Img"
                 ActionMode: CHANGE_SET_EXECUTE
-                ChangeSetName: deployimage
-              Name: apply_change_set
+                ChangeSetName: deployimagex86
+              Name: apply_x86_deploy_change_set
               RoleArn: !GetAtt DeployImgApplyActionRole.Arn
               RunOrder: 2
-              Namespace: DeployImgCFParamApplyVars
+              Namespace: DeployX86ImgCFParamApplyVars
+            # Apply Change Set for AWS CloudFormation for Arm64  which in turn Deploys the new AMI through an AutoScalingGroup
+            - ActionTypeId: 
+                Category: Deploy
+                Owner: AWS
+                Provider: CloudFormation
+                Version: "1"
+              Configuration:
+                StackName: !Sub "${AWS::StackName}-DeployArm64Img"
+                ActionMode: CHANGE_SET_EXECUTE
+                ChangeSetName: deployimagearm64
+              Name: apply_arm_deploy_change_set
+              RoleArn: !GetAtt DeployImgApplyActionRole.Arn
+              RunOrder: 2
+              Namespace: DeployArm64ImgCFParamApplyVars
           Name: DeployImage
       ArtifactStore:
         Location: !Ref DemoArtifactBucket
@@ -728,9 +814,11 @@ Resources:
               - cloudformation:DescribeStacks
             Condition:
               StringEqualsIfExists:
-                cloudformation:ChangeSetName: buildimage
+                cloudformation:ChangeSetName: [ buildimagex86, buildimagearm64 ]
             Effect: Allow
-            Resource: !Sub "arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${AWS::StackName}-BuildImg/*"
+            Resource: 
+              - !Sub "arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${AWS::StackName}-BuildX86Img/*"
+              - !Sub "arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${AWS::StackName}-BuildArm64Img/*"
           - Action: iam:PassRole
             Effect: Allow
             Resource: !GetAtt BuildImgCFRole.Arn
@@ -757,9 +845,11 @@ Resources:
               - cloudformation:ExecuteChangeSet
             Condition:
               StringEqualsIfExists:
-                cloudformation:ChangeSetName: buildimage
+                cloudformation:ChangeSetName: [ buildimagex86, buildimagearm64 ]
             Effect: Allow
-            Resource: !Sub "arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${AWS::StackName}-BuildImg/*"
+            Resource: 
+              - !Sub "arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${AWS::StackName}-BuildX86Img/*"
+              - !Sub "arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${AWS::StackName}-BuildArm64Img/*"
       Roles:
         - Ref: BuildImgApplyActionRole
   # Policy for AWS CloudFormation to create a LaunchTemplate version
@@ -794,7 +884,9 @@ Resources:
               - cloudformation:DescribeStacks
               - cloudformation:DescribeChangeSet
             Effect: Allow
-            Resource: !Sub "arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${AWS::StackName}-DeployImg/*"
+            Resource: 
+              - !Sub "arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${AWS::StackName}-DeployX86Img/*"
+              - !Sub "arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${AWS::StackName}-DeployArm64Img/*"
           - Action:
                 - ec2:CreateTags
             Effect: Allow
@@ -855,7 +947,7 @@ Resources:
               Bool:
                 ec2:IsLaunchTemplateResource: true
               StringEquals:
-                ec2:InstanceType: !Ref InstanceType
+                ec2:InstanceType: [ !Ref InstanceTypeX86, !Ref InstanceTypeArm64 ]
           - Action:
               - ec2:RunInstances
             Effect: Allow
@@ -900,9 +992,11 @@ Resources:
               - cloudformation:DescribeStacks
             Condition:
               StringEqualsIfExists:
-                cloudformation:ChangeSetName: deployimage
+                cloudformation:ChangeSetName: [ deployimagex86, deployimagearm64 ]
             Effect: Allow
-            Resource: !Sub "arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${AWS::StackName}-DeployImg/*"
+            Resource: 
+              - !Sub "arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${AWS::StackName}-DeployX86Img/*"
+              - !Sub "arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${AWS::StackName}-DeployArm64Img/*"
       Roles:
         - Ref: DeployImgCreateActionRole
   # Policy for the specific action in CodePipeline that calls 
@@ -919,9 +1013,11 @@ Resources:
               - cloudformation:ExecuteChangeSet
             Condition:
               StringEqualsIfExists:
-                cloudformation:ChangeSetName: deployimage
+                cloudformation:ChangeSetName: [ deployimagex86, deployimagearm64 ]
             Effect: Allow
-            Resource: !Sub "arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${AWS::StackName}-DeployImg/*"
+            Resource: 
+              - !Sub "arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${AWS::StackName}-DeployX86Img/*"
+              - !Sub "arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${AWS::StackName}-DeployArm64Img/*"
       Roles:
         - Ref: DeployImgApplyActionRole
   # Policy for the temporary EC2 instance used by EC2 Image Builder while

@@ -110,7 +110,7 @@ Resources:
         - "${ShortName} Image (${Architecture}) version ${Version}"
         - ShortName: !Select [0, !Split ['-', !Ref AWS::StackName]]
       Name: !Sub 
-        - "${ShortName}-Image"
+        - "${ShortName}-${Architecture}-Image"
         - ShortName: !Select [0, !Split ['-', !Ref AWS::StackName]]
       ParentImage: !Sub "arn:aws:imagebuilder:${AWS::Region}:aws:image/amazon-linux-2-${Architecture}/x.x.x"
       Version: !Sub ${Version}
