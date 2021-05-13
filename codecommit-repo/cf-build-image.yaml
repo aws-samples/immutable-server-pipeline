@@ -95,6 +95,7 @@ Resources:
     Properties: 
       ImageRecipeArn: !GetAtt DemoImageRecipe.Arn
       InfrastructureConfigurationArn: !GetAtt DemoInfrastructureConfiguration.Arn
+      EnhancedImageMetadataEnabled: false
       Tags:
         Application: 'DemoImageBuilder'
   # The recipe is a set of Components required to build an Image. In this case
