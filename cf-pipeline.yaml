@@ -332,6 +332,13 @@ Resources:
   # hand them over to CloudFormation
   DemoArtifactBucket:
     Type: AWS::S3::Bucket
+    Properties:
+      BucketEncryption:
+          ServerSideEncryptionConfiguration:
+            - ServerSideEncryptionByDefault:
+                SSEAlgorithm: 'AES256'
+      VersioningConfiguration:
+        Status: Enabled
     # Take care: After deleting the CloudFormation template, this bucket
     # is retained. So full clean up requires manual steps. The alternative
     # of a Delete policy is practically not better since it still requires
