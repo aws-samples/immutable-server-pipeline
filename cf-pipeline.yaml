@@ -717,7 +717,14 @@ Resources:
               - !Sub "arn:${AWS::Partition}:imagebuilder:${AWS::Region}:${AWS::AccountId}:image-recipe/*/*"
               - !Sub "arn:${AWS::Partition}:imagebuilder:${AWS::Region}:${AWS::AccountId}:component/*/*"
               - !Sub "arn:${AWS::Partition}:imagebuilder:${AWS::Region}:${AWS::AccountId}:component/*/*/*"
-              - !Sub "arn:${AWS::Partition}:imagebuilder:${AWS::Region}:${AWS::AccountId}:infrastructure-configuration/*"           
+              - !Sub "arn:${AWS::Partition}:imagebuilder:${AWS::Region}:${AWS::AccountId}:infrastructure-configuration/*"
+          - Action:
+              - ec2:DescribeInstances 
+              - ec2:DescribeImages
+              - ec2:DescribeTags 
+              - ec2:DescribeSnapshots
+            Effect: Allow
+            Resource: "*"
       Roles:
         - Ref: BuildImgCFRole
   # Policy for the specific action in CodePipeline that calls 
