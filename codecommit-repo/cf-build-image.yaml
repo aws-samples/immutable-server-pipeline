@@ -45,6 +45,7 @@ Resources:
                   commands:
                     - cd /opt
                     - sudo su
+                    - yum upgrade -y
                     - yum install -y java-11-amazon-corretto
                     - useradd springboot
                     - result=`aws s3 cp s3://${BucketName}/${ObjectKey} /tmp`
