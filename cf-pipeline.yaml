@@ -14,14 +14,14 @@ Parameters:
     Description: Select target subnets for autoscaling group at the end of the pipeline. These will be exported across CloudFormation stacks to avoid manual intervention at later stages in the pipeline.
   Architecture: 
     Type: String
-    Default: x86
+    Default: arm64
     AllowedValues: 
       - x86
       - arm64
-    Description: Select between Intel/AMD (x86) and ARM architecture
+    Description: Select between Intel/AMD (x86) and ARM architecture. Defaults to Arm
   InstanceType: 
     Type: String
-    Default: t3.nano
+    Default: t4g.nano
     AllowedValues: 
       - t2.micro
       - t3.nano
@@ -32,6 +32,8 @@ Parameters:
       - m5a.large
       - m6g.medium
       - m6g.large
+      - c7g.medium
+      - c7g.large
     Description: For x86, select t3/m5(a). For ARM, select t4g/m6g instances
 Resources:
   # The CI/CD pipeline stitching the full mechanism together
