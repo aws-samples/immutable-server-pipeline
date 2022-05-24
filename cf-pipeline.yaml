@@ -326,7 +326,9 @@ Resources:
             return '.'.join(version_no)
       Handler: index.handler
       Role: !GetAtt BuildImgParamLambdaRole.Arn
-      Runtime: python3.7
+      Runtime: python3.9
+      Architectures: 
+        - arm64
       Timeout: 30
   # S3 Bucket to contain the build artifacts from CodeBuild in order to
   # hand them over to CloudFormation
