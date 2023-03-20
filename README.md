@@ -2,7 +2,7 @@
 
 This code sample supports the blog post ["Create immutable servers using EC2 Image Builder and AWS CodePipeline"](https://aws.amazon.com/blogs/mt/create-immutable-servers-using-ec2-image-builder-aws-codepipeline/). The blog post contains an AWS CloudFormation quick-create link to launch the pipeline. This repository contains the source code and detailed instructions so you can customize the example pipeline.
 
-> :warning: **This AWS Sample is Archived as of 2023-03-10**: While this sample continues to be usable for quite some time, be aware that there are no more version updates to the software and libraries used in this repository. Notably: Amazon Linux runs on Amazon Linux 2 and may benefit from an update to Amazon Linux 2023 or up (at the time of writing, this is a very recent release and not yet available in EC2 Image Builder); Amazon Corretto 17 once the next LTS version comes out; Python 3.9 once AWS Lambda starts supporting newer versions; Sping Boot 3.0.4 when new releases follow (minor releases follow regularly) and POM minimum Java compatibility up from 11.
+> :warning: **This AWS Sample is Archived as of 2023-03-20**: While this sample continues to be usable for quite some time, be aware that there are no more version updates to the software and libraries used in this repository. Notably: Amazon Linux runs on Amazon Linux 2 and may benefit from an update to Amazon Linux 2023 or up (at the time of writing, this is a very recent release and not yet available in EC2 Image Builder); Amazon Corretto 17 once the next LTS version comes out; Python 3.9 once AWS Lambda starts supporting newer versions; Sping Boot 3.0.4 when new releases follow (minor releases follow regularly) and POM minimum Java compatibility up from 11.
 
 ## Prerequisites
 
